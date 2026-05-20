@@ -1,13 +1,12 @@
 '''
-实验名称：人脸检测 + 拍照 + 录像
+实验名称：人脸检测 + 拍照
 实验平台：01Studio CanMV K230 (SD卡启动, 3.5寸MIPI屏)
-说明：实时人脸检测 + 短按KEY拍照 + 长按2秒录像(录像中再次长按停止)
+说明：实时人脸检测 + 短按KEY拍照(照片预览5秒后消失)
 '''
 
 from media.sensor import Sensor
 from media.display import Display
 from media.media import MediaManager
-from media.mp4format import Mp4Container, Mp4CfgStr
 from libs.PipeLine import PipeLine
 from libs.AIBase import AIBase
 from libs.AI2D import Ai2d
@@ -26,13 +25,8 @@ def ALIGN_UP(x, align):
 
 
 PICTURE_DIR = "/sdcard/picture"
-VIDEO_DIR = "/sdcard/video"
 KEY_GPIO = 21
 LED_GPIO = 52
-LONG_PRESS_MS = 2000
-
-STATE_IDLE = 0
-STATE_REC = 1
 
 KMODEL_PATH = "/sdcard/examples/kmodel/face_detection_320.kmodel"
 ANCHORS_PATH = "/sdcard/examples/utils/prior_data_320.bin"
@@ -136,7 +130,6 @@ def _frame_to_rgb565_bytes(frame_np):
 
 def main():
     _ensure_dir(PICTURE_DIR)
-    _ensure_dir(VIDEO_DIR)
 
     fpioa = FPIOA()
     fpioa.set_function(KEY_GPIO, FPIOA.GPIO21)
@@ -166,12 +159,7 @@ def main():
     pl.create(sensor)
 
     clock = time.clock()
-    state = STATE_IDLE
-    mp4_muxer = None
-    mp4_path = None
     key_down = False
-    press_time = 0
-    long_press_triggered = False
     photo_msg_end = 0
     preview_overlay = None
 
@@ -180,77 +168,43 @@ def main():
         now = time.ticks_ms()
         pressed = key.value() == 0
 
-        if state == STATE_REC:
-            mp4_muxer.Process()
-
-            if pressed and not key_down:
-                press_time = now
-                key_down = True
-                long_press_triggered = False
-
-            if not pressed and key_down:
-                elapsed = time.ticks_diff(now, press_time)
-                if elapsed >= LONG_PRESS_MS:
-                    _stop_recording(mp4_muxer)
-                    mp4_muxer = None
-                    mp4_path = None
-                    state = STATE_IDLE
-                    led.value(1)
-                    print("recording stopped")
-                    pl.create(sensor)
-                    face_det.config_preprocess()
-                key_down = False
-            continue
-
         img = pl.get_frame()
         res = face_det.run(img)
 
         if pressed and not key_down:
-            press_time = now
             key_down = True
-            long_press_triggered = False
-
-        if key_down and pressed and not long_press_triggered:
-            if time.ticks_diff(now, press_time) >= LONG_PRESS_MS:
-                long_press_triggered = True
-                pl.destroy()
-                led.value(0)
-                mp4_muxer, mp4_path = _start_recording()
-                state = STATE_REC
-                print("recording:", mp4_path)
 
         if not pressed and key_down:
             key_down = False
-            if not long_press_triggered:
-                print("photo start")
-                t0 = time.ticks_ms()
-                data, w, h = _frame_to_rgb565_bytes(img[:, ::3, ::3])
-                import image
-                preview_img = image.Image(w, h, image.RGB565, data=bytes(data))
-                fname = PICTURE_DIR + "/" + _timestamp() + ".jpg"
-                preview_img.save(fname)
-                t1 = time.ticks_ms()
-                print("photo:", fname, "took", time.ticks_diff(t1, t0), "ms")
+            print("photo start")
+            t0 = time.ticks_ms()
+            data, w, h = _frame_to_rgb565_bytes(img[:, ::3, ::3])
+            import image
+            preview_img = image.Image(w, h, image.RGB565, data=bytes(data))
+            fname = PICTURE_DIR + "/" + _timestamp() + ".jpg"
+            preview_img.save(fname)
+            t1 = time.ticks_ms()
+            print("photo:", fname, "took", time.ticks_diff(t1, t0), "ms")
 
-                down = img[:, ::3, ::3]
-                h2, w2 = down.shape[1], down.shape[2]
-                ox = (display_size[0] - w2) // 2
-                oy = (display_size[1] - h2) // 2
-                b_plane = down[2]
-                g_plane = down[1]
-                r_plane = down[0]
-                total_px = display_size[0] * display_size[1]
-                buf = bytearray(total_px * 4)
-                for i in range(3, total_px * 4, 4):
-                    buf[i] = 255
-                ov_np = np.frombuffer(buf, dtype=np.uint8).reshape((display_size[1], display_size[0], 4))
-                for y in range(h2):
-                    ov_np[oy + y, ox:ox + w2, 0] = b_plane[y, :]
-                    ov_np[oy + y, ox:ox + w2, 1] = g_plane[y, :]
-                    ov_np[oy + y, ox:ox + w2, 2] = r_plane[y, :]
-                preview_overlay = image.Image(display_size[0], display_size[1], image.ARGB8888, alloc=image.ALLOC_REF, data=ov_np)
-                photo_msg_end = time.ticks_ms() + 5000
-                continue
+            down = img[:, ::3, ::3]
+            h2, w2 = down.shape[1], down.shape[2]
+            ox = (display_size[0] - w2) // 2
+            oy = (display_size[1] - h2) // 2
+            b_plane = down[2]
+            g_plane = down[1]
+            r_plane = down[0]
+            total_px = display_size[0] * display_size[1]
+            buf = bytearray(total_px * 4)
+            for i in range(3, total_px * 4, 4):
+                buf[i] = 255
+            ov_np = np.frombuffer(buf, dtype=np.uint8).reshape((display_size[1], display_size[0], 4))
+            for y in range(h2):
+                ov_np[oy + y, ox:ox + w2, 0] = b_plane[y, :]
+                ov_np[oy + y, ox:ox + w2, 1] = g_plane[y, :]
+                ov_np[oy + y, ox:ox + w2, 2] = r_plane[y, :]
+            preview_overlay = image.Image(display_size[0], display_size[1], image.ARGB8888, alloc=image.ALLOC_REF, data=ov_np)
+            photo_msg_end = time.ticks_ms() + 5000
+            continue
 
         face_det.draw_result(pl, res)
         if photo_msg_end and time.ticks_ms() < photo_msg_end:
@@ -261,23 +215,6 @@ def main():
             preview_overlay = None
         pl.show_image()
         gc.collect()
-
-
-def _start_recording():
-    path = VIDEO_DIR + "/" + _timestamp() + ".mp4"
-    mp4_muxer = Mp4Container()
-    mp4_cfg = Mp4CfgStr(mp4_muxer.MP4_CONFIG_TYPE_MUXER)
-    mp4_cfg.SetMuxerCfg(path, mp4_muxer.MP4_CODEC_ID_H265, 1280, 720,
-                         mp4_muxer.MP4_CODEC_ID_G711U)
-    mp4_muxer.Create(mp4_cfg)
-    mp4_muxer.Start()
-    return mp4_muxer, path
-
-
-def _stop_recording(mp4_muxer):
-    mp4_muxer.Stop()
-    mp4_muxer.Destroy()
-    print("video saved")
 
 
 main()
